@@ -1,0 +1,5 @@
+This is starting off as my own project to automate the common tasks I perform in
+daily Xen maintenance. I don't expect the first few revisions to be particularly
+useful to anyone but myself. I hope that someday that will change.
+
+# vim: tw=80:noet:ts=4:sw=4
