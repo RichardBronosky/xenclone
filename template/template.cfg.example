@@ -1,0 +1,19 @@
+#kernel = '/boot/vmlinuz-2.6.18-128.2.1.el5xen'
+#ramdisk = '/boot/initrd-2.6.18-128.2.1.el5xen2.img'
+bootloader =	'/usr/bin/pygrub'
+memory =	 256
+maxmem =	1024
+vcpus =		1
+name =		'template'
+vif =		[
+			'bridge=xenbr0',
+			'bridge=xenbr1'
+		]
+disk =		[
+			'phy:/dev/xenvg/template,xvda1,w',
+			'phy:/dev/xenvg/templateswap,xvdb1,w'
+		]
+root = 		'/dev/xvda1 ro'
+extra = 	'xencons=con'
+
+# vim:noet:ts=8:sw=8:sts=0

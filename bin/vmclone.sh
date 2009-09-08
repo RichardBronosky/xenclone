@@ -25,6 +25,16 @@ do_exit_stack(){
     fi
 }
 
+mkdirsafe() {
+    if mkdir $1 2>/dev/null; then
+        echo make passed;
+        exit_stack_push "rm -rf $1";
+    else
+        echo make failed;
+        stat -f ' ' $1/* 1>/dev/null 2>&1 || exit_stack_push "rm -rf $1";
+    fi
+}
+
 ## Every string in this array will be executed on exit.
 exit_stack=();
 trap do_exit_stack EXIT;
@@ -54,12 +64,6 @@ Acknowledgments:
 ECHO
 }
 
-## Test for root
-if [[ $(id -nu) != 'root' ]]; then
-    echo "This script must be run as root (or sudo)!";
-    exit 1;
-fi
-
 ## Test for arguments
 if [[ $# -lt 2 ]]; then
     usage;
@@ -73,14 +77,19 @@ else
             --) shift; break;;
         esac
     done
-
-    src_vm=$1;
-    dest_vm=$2;
+    vm1=$1;
+    vm2=$2;
     if [[ $# -lt 3 ]]; then
-        dest_lv_size=$(lvdisplay /dev/SysVolGroup/${src_vm} | sed '/LV Size/!d;s/.*   *//;s/ //');
+        dest_lv_size=$(lvdisplay /dev/SysVolGroup/${vm1} | sed '/LV Size/!d;s/.*   *//;s/ //');
     else
         dest_lv_size=$3;
     fi
+fi
+
+## Test for root
+if [[ $(id -nu) != 'root' ]]; then
+    echo "This script must be run as root (or sudo)!";
+    exit 1;
 fi
 
 step(){
@@ -94,56 +103,58 @@ step(){
 }
 
 ## Make and mount destination LV
-mkdir /mnt/${dest_vm} 2>/dev/null || true;
-step "Made mount point /mnt/${dest_vm}";
-lvcreate -n ${dest_vm} -L ${dest_lv_size} /dev/SysVolGroup;
-step "Created LV ${dest_vm}";
-mkfs -t ext3 /dev/SysVolGroup/${dest_vm};
+mkdirsafe /mnt/${vm2};
+step "Made mount point /mnt/${vm2}";
+lvcreate -n ${vm2} -L ${dest_lv_size} /dev/SysVolGroup;
+step "Created LV ${vm2}";
+mkfs -t ext3 /dev/SysVolGroup/${vm2};
 step "Formated the LV ext3";
-mount /dev/SysVolGroup/${dest_vm} /mnt/${dest_vm} || true;
+mount /dev/SysVolGroup/${vm2} /mnt/${vm2} || true;
 step "Mounted LV";
-lvcreate -n ${dest_vm}swap -L 1g /dev/SysVolGroup;
-step "Created LV ${dest_vm}swap";
-mkswap -L ${dest_vm}swap /dev/SysVolGroup/${dest_vm}swap;
+lvcreate -n ${vm2}swap -L 1g /dev/SysVolGroup;
+step "Created LV ${vm2}swap";
+mkswap -L ${vm2}swap /dev/SysVolGroup/${vm2}swap;
 step "Made LV a swap with mkswap";
 
 ## Snapshot and mount source LV
-mkdir /mnt/${src_vm}snap 2>/dev/null || true;
-step "Made mount point /mnt/${src_vm}";
-exit_stack_push "lvremove -f /dev/SysVolGroup/${src_vm}snap";
-lvcreate -s -L 2G -n ${src_vm}snap /dev/SysVolGroup/${src_vm};
-step "Created LV ${src_vm}";
-mount /dev/SysVolGroup/${src_vm}snap /mnt/${src_vm}snap/;
+mkdirsafe /mnt/${vm1}snap;
+step "Made mount point /mnt/${vm1}snap";
+exit_stack_push "lvremove -f /dev/SysVolGroup/${vm1}snap";
+lvcreate -s -L 2G -n ${vm1}snap /dev/SysVolGroup/${vm1};
+step "Created LV ${vm1}snap";
+exit_stack_push "umount /mnt/${vm1}snap/"
+mount /dev/SysVolGroup/${vm1}snap /mnt/${vm1}snap/;
 step "Mounted LV";
 
 ## Sync the LVs and release the snapshot
 echo "Rsyncing...";
-rsync -a --exclude '/var/log' --exclude '/var/www/html/*' /mnt/${src_vm}snap/ /mnt/${dest_vm};
+rsync -a --exclude '/var/log' --exclude '/var/www/html/*' /mnt/${vm1}snap/ /mnt/${vm2};
 step "Rsynced";
-umount /mnt/${src_vm}snap/;
-step "Unmounted /mnt/${src_vm}snap/";
-lvremove -f /dev/SysVolGroup/${src_vm}snap;
+umount /mnt/${vm1}snap/;
+exit_stack_pop;
+step "Unmounted /mnt/${vm1}snap/";
+lvremove -f /dev/SysVolGroup/${vm1}snap;
 exit_stack_pop;
 step "Removed snapshot LV";
 
 ## Configure Xen and Linux
-mkdir /xen/${dest_vm};
-step "Created /xen/${dest_vm}";
-cp /xen/${src_vm}/${src_vm}.cfg /xen/${dest_vm}/${dest_vm}.cfg;
-step "Copied source config to /xen/${dest_vm}/${dest_vm}.cfg";
-ln -s /xen/${dest_vm}/${dest_vm}.cfg /etc/xen/${dest_vm};
+mkdirsafe /xen/${vm2};
+step "Created /xen/${vm2}";
+cp /xen/${vm1}/${vm1}.cfg /xen/${vm2}/${vm2}.cfg;
+step "Copied source config to /xen/${vm2}/${vm2}.cfg";
+ln -s /xen/${vm2}/${vm2}.cfg /etc/xen/${vm2};
 step "Symlinked cfg to /etc/xen";
 echo "Appending comments to configurations needing modification.";
-echo -e "### Modify memory, maxmem, name, disk ###\n# :%s/${src_vm}/${dest_vm}/gc" \
-    >>/xen/${dest_vm}/${dest_vm}.cfg;
-echo -e "### Modify HOSTNAME ###\n# :%s/${src_vm}/${dest_vm}/gc" \
-    >>/mnt/${dest_vm}/etc/sysconfig/network;
+echo -e "### Modify memory, maxmem, name, disk ###\n# :%s/${vm1}/${vm2}/gc" \
+    >>/xen/${vm2}/${vm2}.cfg;
+echo -e "### Modify HOSTNAME ###\n# :%s/${vm1}/${vm2}/gc" \
+    >>/mnt/${vm2}/etc/sysconfig/network;
 echo -e "### Modify IPADDR ###" \
-    >>/mnt/${dest_vm}/etc/sysconfig/network-scripts/ifcfg-eth0;
+    >>/mnt/${vm2}/etc/sysconfig/network-scripts/ifcfg-eth0;
 echo -e "### Modify IPADDR ###" \
-    >>/mnt/${dest_vm}/etc/sysconfig/network-scripts/ifcfg-eth1;
-echo -e "### Modify self references ###\n# :%s/${src_vm}/${dest_vm}/gc" \
-    >>/mnt/${dest_vm}/etc/hosts;
+    >>/mnt/${vm2}/etc/sysconfig/network-scripts/ifcfg-eth1;
+echo -e "### Modify self references ###\n# :%s/${vm1}/${vm2}/gc" \
+    >>/mnt/${vm2}/etc/hosts;
 
 ## Detect the use of sudo for command hints
 if [[ ${SUDO_USER-X} = X ]]; then
@@ -157,8 +168,8 @@ cat << ECHO
 
 You need to modify the Xen cfg, hosts, network, and ifcfg files. Notes have been
 appended to each of the files and they can all be opened with the following command:
-${sudo}vim '+set hidden' /xen/${dest_vm}/${dest_vm}.cfg /mnt/${dest_vm}/etc/sysconfig/network /mnt/${dest_vm}/etc/sysconfig/network-scripts/ifcfg-eth0 /mnt/${dest_vm}/etc/sysconfig/network-scripts/ifcfg-eth1 /mnt/${dest_vm}/etc/hosts
+${sudo}vim '+set hidden' /xen/${vm2}/${vm2}.cfg /mnt/${vm2}/etc/sysconfig/network /mnt/${vm2}/etc/sysconfig/network-scripts/ifcfg-eth0 /mnt/${vm2}/etc/sysconfig/network-scripts/ifcfg-eth1 /mnt/${vm2}/etc/hosts
 
 After editing the files on the mounted LV, you must unmount it with:
-${sudo}umount /mnt/${dest_vm}/
+${sudo}umount /mnt/${vm2}/
 ECHO

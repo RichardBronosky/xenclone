@@ -25,6 +25,16 @@ do_exit_stack(){
     fi
 }
 
+mkdirsafe() {
+    if mkdir $1 2>/dev/null; then
+        echo make passed;
+        exit_stack_push "rm -rf $1";
+    else
+        echo make failed;
+        stat -f ' ' $1/* 1>/dev/null 2>&1 || exit_stack_push "rm -rf $1";
+    fi
+}
+
 ## Every string in this array will be executed on exit.
 exit_stack=();
 trap do_exit_stack EXIT;
@@ -52,12 +62,6 @@ Acknowledgments:
 ECHO
 }
 
-## Test for root
-if [[ $(id -nu) != 'root' ]]; then
-    echo "This script must be run as root (or sudo)!";
-    exit 1;
-fi
-
 ## Test for arguments
 if [[ $# -lt 2 ]]; then
     usage;
@@ -71,9 +75,15 @@ else
             --) shift; break;;
         esac
     done
+    vm1=$1;
 
-    src_vm=$1;
-    dest_tar="$2.tgz";
+    tar1="$2.tgz";
+fi
+
+## Test for root
+if [[ $(id -nu) != 'root' ]]; then
+    echo "This script must be run as root (or sudo)!";
+    exit 1;
 fi
 
 step(){
@@ -87,22 +97,23 @@ step(){
 }
 
 ## Snapshot and mount source LV
-mkdir /mnt/${src_vm}snap 2>/dev/null || true;
-step "Made mount point /mnt/${src_vm}";
-exit_stack_push "lvremove -f /dev/SysVolGroup/${src_vm}snap";
-lvcreate -s -L 2G -n ${src_vm}snap /dev/SysVolGroup/${src_vm};
-step "Created LV ${src_vm}snap";
-mount /dev/SysVolGroup/${src_vm}snap /mnt/${src_vm}snap/;
+mkdirsafe /mnt/${vm1}snap;
+step "Made mount point /mnt/${vm1}snap";
+exit_stack_push "lvremove -f /dev/SysVolGroup/${vm1}snap";
+lvcreate -s -L 2G -n ${vm1}snap /dev/SysVolGroup/${vm1};
+step "Created LV ${vm1}snap";
+exit_stack_push "umount /mnt/${vm1}snap/"
+mount /dev/SysVolGroup/${vm1}snap /mnt/${vm1}snap/;
 step "Mounted LV";
 
 ## Create a tarball from the snapshot
 echo "Tarring..."
-tar --exclude='*.log' --exclude='*var/log/*_log*' -czf $dest_tar -C /mnt/${src_vm}snap/ .
-## Sync the LVs and release the snapshot
+tar --numeric-owner --exclude='*.log' --exclude='*var/log/*_log*' -czf $tar1 -C /mnt/${vm1}snap/ .
 step "Tarred";
-umount /mnt/${src_vm}snap/;
-step "Unmounted /mnt/${src_vm}snap/";
-lvremove -f /dev/SysVolGroup/${src_vm}snap;
+umount /mnt/${vm1}snap/;
+exit_stack_pop;
+step "Unmounted /mnt/${vm1}snap/";
+lvremove -f /dev/SysVolGroup/${vm1}snap;
 exit_stack_pop;
 step "Removed snapshot LV";
 
